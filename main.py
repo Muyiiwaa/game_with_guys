@@ -4,35 +4,56 @@ import pandas as pd
 from utils import get_questions
 
 questions = get_questions()
-# Initialize session state variables
+
+# List of player names
+players = ["Semilore", "Tomisin", "Joel", "Monica", "Lekan"]
+
+# Lock player selection after choosing
+if "selected_player" not in st.session_state:
+    st.session_state.selected_player = None
+
+if st.session_state.selected_player is None:
+    selected_player = st.selectbox("Select your name:", players)
+    if st.button("Lock Player"):
+        st.session_state.selected_player = selected_player
+        st.rerun()
+else:
+    st.write(f"**Player:** {st.session_state.selected_player}")
+
+# Initialize session state for each player's score and wrong answers
+if "scores" not in st.session_state:
+    st.session_state.scores = {player: 0 for player in players}
+if "wrong_answers" not in st.session_state:
+    st.session_state.wrong_answers = {player: 0 for player in players}
 if "current_question" not in st.session_state:
     st.session_state.current_question = 0
-if "score" not in st.session_state:
-    st.session_state.score = 0
 if "feedback" not in st.session_state:
     st.session_state.feedback = ""
 if "show_next" not in st.session_state:
     st.session_state.show_next = False
-if "wrong_answers" not in st.session_state:
-    st.session_state.wrong_answers = 0
 if "answered_questions" not in st.session_state:
     st.session_state.answered_questions = []  # Track answered questions
 
 # Display the current question inside a container with fixed height
-with st.container(height=250):
+with st.container():
     current_q = questions[st.session_state.current_question]
     st.write(f"**Question {st.session_state.current_question + 1}:** {current_q['question']}")
-    selected_option = st.radio("Choose an answer:", current_q["options"], disabled=st.session_state.current_question in st.session_state.answered_questions)
+    selected_option = st.radio(
+        "Choose an answer:", 
+        current_q["options"], 
+        disabled=st.session_state.current_question in st.session_state.answered_questions
+    )
 
 st.divider()
+
 # Submit button to process the answer
 if st.button("Submit Answer"):
     if selected_option == current_q["answer"]:
         st.session_state.feedback = "Correct! 🎉"
-        st.session_state.score += 1
+        st.session_state.scores[st.session_state.selected_player] += 1
     else:
         st.session_state.feedback = f"Wrong! 😢 The answer is '{current_q['answer']}'."
-        st.session_state.wrong_answers += 1
+        st.session_state.wrong_answers[st.session_state.selected_player] += 1
 
     if "Correct" in st.session_state.feedback:
         st.success(st.session_state.feedback)
@@ -59,15 +80,20 @@ if st.session_state.show_next:
             st.session_state.show_next = False  # Hide the Next button
             st.rerun()  # Refresh the app to move to the next question
         else:
-            st.write(f"Quiz complete! Your score: {st.session_state.score}/{len(questions)}")
+            st.write("Quiz complete!")
+            st.write(f"Your score: {st.session_state.scores[st.session_state.selected_player]}/{len(questions)}")
+
 st.divider()
-# Display correct vs wrong answers as a bar chart in a new container
+
+# Display correct vs wrong answers for all players as a bar chart
 with st.container():
-    st.subheader("Quiz Performance")
+    st.subheader("Quiz Performance of All Players")
     performance_data = pd.DataFrame(
         {
-            "result": ["Correct", "Wrong"],
-            "count": [st.session_state.score, st.session_state.wrong_answers]
+            "Player": players,
+            "Score": [st.session_state.scores[player] for player in players]
         }
     )
-    st.bar_chart(performance_data,x = "result", y="count", color="result")
+
+    # Display the score comparison as a bar chart
+    st.bar_chart(data=performance_data, x='Player', y='Score', color='Player')
