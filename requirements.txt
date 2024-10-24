@@ -3,3 +3,4 @@ sqlalchemy
 plotly
 pandas
 python-dotenv
+streamlit
