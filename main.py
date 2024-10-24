@@ -1,99 +1,163 @@
 import streamlit as st
 import time
 import pandas as pd
+import plotly.express as px
+import psycopg2
+import json
 from utils import get_questions
+from dotenv import load_dotenv
+import os
 
+#load environment variables
+load_dotenv()
+
+# PostgreSQL connection
+def get_connection():
+    return psycopg2.connect(
+        host=os.getenv("HOST"),  # Adjust if needed
+        database=os.getenv("DATABASE"),
+        user=os.getenv("USER"),
+        password=os.getenv("PASSWORD"),
+        port = os.getenv("PORT")
+    )
+
+# Helper to fetch scores from PostgreSQL
+def get_scores():
+    conn = get_connection()
+    df = pd.read_sql("SELECT * FROM player_scores", conn)
+    conn.close()
+    return df
+
+# Helper to update scores
+def update_score(player, score):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE player_scores SET score = %s WHERE player_name = %s", (score, player))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Helper to load player progress
+def load_progress(player):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT current_question_index, answered_questions, questions_answered_count 
+        FROM player_progress WHERE player_name = %s
+    """, (player,))
+    progress = cur.fetchone()
+    conn.close()
+    return progress if progress else (0, [], 0)
+
+# Helper to save player progress
+def save_progress(player, current_question, answered_questions, questions_answered_count):
+    answered_questions = json.dumps(answered_questions)  
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO player_progress (player_name, current_question_index, answered_questions, questions_answered_count)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (player_name) DO UPDATE
+        SET current_question_index = EXCLUDED.current_question_index,
+            answered_questions = EXCLUDED.answered_questions,
+            questions_answered_count = EXCLUDED.questions_answered_count
+    """, (player, current_question, answered_questions, questions_answered_count))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+# Fetch questions
 questions = get_questions()
 
-# List of player names
-players = ["Semilore", "Tomisin", "Joel", "Monica", "Lekan"]
-
-# Lock player selection after choosing
+# Player selection (lock after choosing)
 if "selected_player" not in st.session_state:
     st.session_state.selected_player = None
 
 if st.session_state.selected_player is None:
-    selected_player = st.selectbox("Select your name:", players)
+    selected_player = st.selectbox("Select your name:", ["Semilore", "Tomisin", "Joel", "Monica", "Lekan"])
     if st.button("Lock Player"):
         st.session_state.selected_player = selected_player
+
+        # Load progress from database
+        current_question, answered_questions, questions_answered_count = load_progress(selected_player)
+        st.session_state.current_question = questions_answered_count  # Start from where they left off
+        st.session_state.answered_questions = answered_questions
+
         st.rerun()
 else:
     st.write(f"**Player:** {st.session_state.selected_player}")
 
-# Initialize session state for each player's score and wrong answers
-if "scores" not in st.session_state:
-    st.session_state.scores = {player: 0 for player in players}
-if "wrong_answers" not in st.session_state:
-    st.session_state.wrong_answers = {player: 0 for player in players}
-if "current_question" not in st.session_state:
-    st.session_state.current_question = 0
+# Initialize session state variables
 if "feedback" not in st.session_state:
     st.session_state.feedback = ""
 if "show_next" not in st.session_state:
     st.session_state.show_next = False
-if "answered_questions" not in st.session_state:
-    st.session_state.answered_questions = []  # Track answered questions
+if "question_answered" not in st.session_state:
+    st.session_state.question_answered = False
+if "current_question" not in st.session_state:
+    st.session_state.current_question = 0
 
-# Display the current question inside a container with fixed height
-with st.container():
+# Display current question
+st.divider()
+with st.container(height=250):
     current_q = questions[st.session_state.current_question]
     st.write(f"**Question {st.session_state.current_question + 1}:** {current_q['question']}")
+
+    # Disable radio button if already answered
     selected_option = st.radio(
-        "Choose an answer:", 
-        current_q["options"], 
-        disabled=st.session_state.current_question in st.session_state.answered_questions
+        "Choose an answer:",
+        current_q["options"],
+        disabled=st.session_state.question_answered
     )
 
-st.divider()
+# Submit button logic
+if st.button("Submit Answer", disabled=st.session_state.question_answered):
+    data = get_scores()
+    current_score = data.loc[data["player_name"] == st.session_state.selected_player, "score"].values[0]
 
-# Submit button to process the answer
-if st.button("Submit Answer"):
     if selected_option == current_q["answer"]:
         st.session_state.feedback = "Correct! 🎉"
-        st.session_state.scores[st.session_state.selected_player] += 1
+        current_score += 1
     else:
         st.session_state.feedback = f"Wrong! 😢 The answer is '{current_q['answer']}'."
-        st.session_state.wrong_answers[st.session_state.selected_player] += 1
 
-    if "Correct" in st.session_state.feedback:
-        st.success(st.session_state.feedback)
-    else:
-        st.error(st.session_state.feedback)
+    # Update score in PostgreSQL
+    update_score(st.session_state.selected_player, int(current_score))
 
-    # Add the current question to answered questions
+    # Mark question as answered, increment count, and save progress
+    st.session_state.question_answered = True
     st.session_state.answered_questions.append(st.session_state.current_question)
+    new_count = st.session_state.current_question + 1
+    save_progress(st.session_state.selected_player, st.session_state.current_question, st.session_state.answered_questions, new_count)
 
-    # Display a spinner/loader during the 3-second wait
     with st.spinner("Loading next question..."):
-        time.sleep(3)  # Wait for 3 seconds
+        time.sleep(2)
 
-    # Trigger a UI refresh to show the "Next" button
     st.session_state.show_next = True
     st.rerun()
 
-# Show the Next Question button if ready
-if st.session_state.show_next:
-    if st.button("Next Question"):
-        if st.session_state.current_question < len(questions) - 1:
-            st.session_state.current_question += 1
-            st.session_state.feedback = ""  # Reset feedback
-            st.session_state.show_next = False  # Hide the Next button
-            st.rerun()  # Refresh the app to move to the next question
-        else:
-            st.write("Quiz complete!")
-            st.write(f"Your score: {st.session_state.scores[st.session_state.selected_player]}/{len(questions)}")
+# Next question button
+if st.session_state.show_next and st.button("Next Question"):
+    if st.session_state.current_question < len(questions) - 1:
+        st.session_state.current_question += 1
+        st.session_state.feedback = ""
+        st.session_state.show_next = False
+        st.session_state.question_answered = False  # Reset for the new question
+        st.rerun()
+    else:
+        st.write("Quiz complete!")
 
+# Real-time leaderboard
 st.divider()
-
-# Display correct vs wrong answers for all players as a bar chart
-with st.container():
-    st.subheader("Quiz Performance of All Players")
-    performance_data = pd.DataFrame(
-        {
-            "Player": players,
-            "Score": [st.session_state.scores[player] for player in players]
-        }
-    )
-
-    # Display the score comparison as a bar chart
-    st.bar_chart(data=performance_data, x='Player', y='Score', color='Player')
+scores_data = get_scores()
+fig = px.bar(
+    scores_data,
+    x="player_name",
+    y="score",
+    color="player_name",
+    text="score",
+    title="Real-Time LeaderBoard"
+)
+fig.update_layout(yaxis_title="Score", xaxis_title="Player", showlegend=False)
+fig.update_traces(textposition='outside')
+st.plotly_chart(fig, use_container_width=True)
